@@ -121,6 +121,7 @@ st.write("Latest financial news with real-time stock price change comparison")
 
 # Get and display news
 news_df = get_financial_news()
+st.dataframe(news_df)
 news_df["Sentiment"] = news_df["title"].apply(analyze_sentiment)
 news_df["Subjectivity"] = news_df["title"].apply(analyze_subjectivity)
 
