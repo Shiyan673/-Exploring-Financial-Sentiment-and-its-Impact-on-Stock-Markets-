@@ -17,24 +17,41 @@ def safe_ticker_key(ticker):
     unique_suffix = str(uuid.uuid4())[:8]  # Generate a short unique suffix
     return f"{clean_ticker}_{unique_suffix}"  # Append suffix to ensure uniqueness
 
-# Function to convert "43 minutes ago" to a timestamp (in local time)
+# Function to convert "43 minutes ago" / "3h ago" to a timestamp (in local time)
 def convert_relative_time(time_str):
-    """Converts relative time (e.g., '43 minutes ago') to an approximate timestamp in local time."""
-    now = datetime.now()  # Get current time in local timezone
-    
-    if time_str == 'yesterday':
-        return now - timedelta(days=1)
-    elif "minute" in time_str:
-        minutes = int(time_str.split()[0])
-        return now - timedelta(minutes=minutes)
-    elif "hour" in time_str:
-        hours = int(time_str.split()[0])
-        return now - timedelta(hours=hours)
-    elif "day" in time_str:
-        days = int(time_str.split()[0])
-        return now - timedelta(days=days)
-    else:
+    """Converts relative time (e.g., '43 minutes ago', '3h ago') to an approximate timestamp in local time."""
+    try:
+        now = datetime.now()  # Get current time in local timezone
+        if not time_str:
+            return None
+        s = time_str.strip().lower()
+
+        if s == 'yesterday':
+            return now - timedelta(days=1)
+        if s in ('just now', 'now'):
+            return now
+
+        # Abbreviated forms like "25m ago", "3h ago", "1d ago"
+        m = re.match(r'^(\d+)\s*([mhd])\s*ago$', s)
+        if m:
+            value = int(m.group(1))
+            unit = m.group(2)
+            if unit == 'm':
+                return now - timedelta(minutes=value)
+            if unit == 'h':
+                return now - timedelta(hours=value)
+            return now - timedelta(days=value)
+
+        # Verbose forms like "43 minutes ago", "2 hours ago"
+        if "minute" in s:
+            return now - timedelta(minutes=int(s.split()[0]))
+        if "hour" in s:
+            return now - timedelta(hours=int(s.split()[0]))
+        if "day" in s:
+            return now - timedelta(days=int(s.split()[0]))
         return None  # If the format is unrecognized, return None
+    except Exception:
+        return None
 
 # Function to scrape financial news
 def get_financial_news():
@@ -46,20 +63,56 @@ def get_financial_news():
     response = requests.get(url, headers=headers)
     soup = BeautifulSoup(response.text, 'html.parser')
 
-    articles = soup.find_all("div", class_="content")  # Adjust selector
+    # Yahoo's current markup: article cards are <section class="story-item">,
+    # with the hero lead story using <section class="lead-story-content">.
+    # The yf-* hashed classes are Svelte-scoped and change between builds,
+    # so only the stable class names are used here.
+    articles = soup.select("section.story-item, section.lead-story-content")
     news_list = []
+    seen_links = set()
 
     for article in articles:
-        title = article.text
-        link = article.a["href"] if article.a and article.a.has_attr("href") else None
-        para = article.p.text if article.p else ""
-        press = article.find("div", class_="publishing").text.split(' • ')[0] if article.find("div", class_="publishing") else None
-        time_str = article.find("div", class_="publishing").text.split(' • ')[1] if article.find("div", class_="publishing") else None
+        # Headline anchor carries the article URL; its child <h3> is the title
+        headline_a = article.select_one('a[data-ylk*="elm:hdln"]')
+        if headline_a is None:
+            for a in article.find_all("a", href=True):
+                if a.find("h3"):
+                    headline_a = a
+                    break
+        if headline_a is None:
+            continue
+
+        h3 = headline_a.find("h3")
+        title = h3.get_text(strip=True) if h3 else headline_a.get_text(strip=True)
+        if not title:
+            continue
+
+        link = headline_a.get("href")
+        if link and link.startswith("/"):
+            link = "https://finance.yahoo.com" + link
+        if link in seen_links:
+            continue
+        seen_links.add(link)
+
+        # Summary snippet only exists on hero/lead stories
+        summary_p = article.select_one("p.summary")
+        para = summary_p.get_text(strip=True) if summary_p else ""
+
+        byline = article.select_one("div.byline")
+        press = None
+        time_str = None
+        if byline:
+            publisher = byline.select_one("span.publisher")
+            press = publisher.get_text(strip=True) if publisher else None
+            published = byline.select_one("span.published-date")
+            time_str = published.get_text(strip=True) if published else None
         timestamp = convert_relative_time(time_str) if time_str else None
-        a_ticker = article.find("a", class_="ticker")
-        ticker = a_ticker.find("span", class_="symbol").get_text(strip=True) if a_ticker else None
-        
-        news_list.append({"title": title, "link": link, "paragraph": para, "Press": press, 
+
+        # Ticker is optional — many cards don't have one
+        ticker_el = article.select_one(".ticker-wrapper a.ticker-link span.symbol")
+        ticker = ticker_el.get_text(strip=True) if ticker_el else None
+
+        news_list.append({"title": title, "link": link, "paragraph": para, "Press": press,
                           "Publishing Time": timestamp, "Ticker": ticker})
 
     return pd.DataFrame(news_list)
