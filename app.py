@@ -51,8 +51,8 @@ def get_financial_news():
 
     for article in articles:
         title = article.text
-        link = article.a["href"]
-        para = article.p.text
+        link = article.a["href"] if article.a and article.a.has_attr("href") else None
+        para = article.p.text if article.p else ""
         press = article.find("div", class_="publishing").text.split(' • ')[0] if article.find("div", class_="publishing") else None
         time_str = article.find("div", class_="publishing").text.split(' • ')[1] if article.find("div", class_="publishing") else None
         timestamp = convert_relative_time(time_str) if time_str else None
